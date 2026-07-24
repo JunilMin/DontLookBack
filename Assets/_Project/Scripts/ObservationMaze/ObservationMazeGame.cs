@@ -15,14 +15,20 @@ namespace DontLookBack.ObservationMaze
         private readonly List<Clue> clues = new();
         private readonly Dictionary<MazeCell, GameObject> chalkMarks = new();
         private readonly List<Anomaly> anomalies = new();
+        private readonly List<Light2D> globalLights = new();
         private MazeLayout layout;
         private ObservationMazePlayer player;
         private Camera gameCamera;
+        private Light2D flashlight;
         private Material litMaterial;
         private Texture2D pixel;
+        private MazeCell powerCell;
+        private GameObject powerConsole;
         private string message;
         private float messageUntil;
+        private bool powerOn;
         private bool completed;
+        private bool exitLockedMessageShown;
         private int foundClues;
 
         private sealed class Clue
@@ -53,10 +59,11 @@ namespace DontLookBack.ObservationMaze
             layout = new MazeLayout(MazeWidth, MazeHeight, MazeSeed);
             BuildCameraAndDarkness();
             BuildMaze();
+            BuildPowerConsole();
             BuildPlayer();
             BuildClues();
             BuildAnomalies();
-            ShowMessage("중앙 관찰실. 바람과 시설 번호를 따라 외벽의 출구를 찾아라.", 6f);
+            ShowMessage("주 전원이 끊어졌다. 손전등을 이용해 가까운 전력 제어실을 찾아라.", 7f);
         }
 
         private void BuildCameraAndDarkness()
@@ -77,10 +84,19 @@ namespace DontLookBack.ObservationMaze
             {
                 if (global.lightType == Light2D.LightType.Global)
                 {
-                    global.intensity = 0.018f;
-                    global.color = new Color(0.14f, 0.2f, 0.25f);
+                    globalLights.Add(global);
                 }
             }
+
+            if (globalLights.Count == 0)
+            {
+                var globalObject = new GameObject("Facility Global Light");
+                var global = globalObject.AddComponent<Light2D>();
+                global.lightType = Light2D.LightType.Global;
+                globalLights.Add(global);
+            }
+
+            SetFacilityLights(false);
         }
 
         private void BuildMaze()
@@ -113,6 +129,14 @@ namespace DontLookBack.ObservationMaze
                 new Color(0.25f, 0.82f, 0.55f), 1, false);
         }
 
+        private void BuildPowerConsole()
+        {
+            var pathIndex = Mathf.Clamp(12, 2, layout.Solution.Count - 2);
+            powerCell = layout.Solution[pathIndex];
+            powerConsole = CreateSprite(null, "Emergency Power Console", MazeToWorld(powerCell),
+                new Vector2(0.62f, 0.62f), new Color(0.95f, 0.38f, 0.12f), 3, false);
+        }
+
         private void BuildPlayer()
         {
             var playerObject = CreateSprite(null, "Observer", MazeToWorld(layout.Start), new Vector2(0.55f, 0.45f),
@@ -125,7 +149,7 @@ namespace DontLookBack.ObservationMaze
 
             var lightObject = new GameObject("Narrow Flashlight");
             lightObject.transform.SetParent(playerObject.transform, false);
-            var flashlight = lightObject.AddComponent<Light2D>();
+            flashlight = lightObject.AddComponent<Light2D>();
             flashlight.lightType = Light2D.LightType.Point;
             flashlight.intensity = 1.15f;
             flashlight.color = new Color(1f, 0.88f, 0.62f);
@@ -189,6 +213,16 @@ namespace DontLookBack.ObservationMaze
 
             if (Vector2.Distance(playerPosition, MazeToWorld(layout.Exit)) < 0.75f)
             {
+                if (!powerOn)
+                {
+                    if (!exitLockedMessageShown)
+                    {
+                        exitLockedMessageShown = true;
+                        ShowMessage("출구 잠금장치에 전력이 없다. 먼저 주 전원을 복구해야 한다.", 5f);
+                    }
+                    return;
+                }
+
                 completed = true;
                 player.GetComponent<Rigidbody2D>().linearVelocity = Vector2.zero;
                 ShowMessage($"탈출 성공 — {foundClues}/{clues.Count}개의 단서로 외벽에 도달했다.", 999f);
@@ -232,7 +266,19 @@ namespace DontLookBack.ObservationMaze
         private void HandleInput(Vector2 playerPosition)
         {
             var keyboard = Keyboard.current;
-            if (keyboard == null || !keyboard.qKey.wasPressedThisFrame) return;
+            if (keyboard == null) return;
+
+            if (!powerOn && keyboard.eKey.wasPressedThisFrame &&
+                Vector2.Distance(playerPosition, powerConsole.transform.position) < 0.9f)
+            {
+                powerOn = true;
+                SetFacilityLights(true);
+                powerConsole.GetComponent<SpriteRenderer>().color = new Color(0.25f, 0.9f, 0.48f);
+                ShowMessage("주 전력 복구 완료. 시설 전체 조명이 켜졌다. 이제 외벽 출구를 찾아라.", 7f);
+                return;
+            }
+
+            if (!keyboard.qKey.wasPressedThisFrame) return;
             var cell = WorldToMaze(playerPosition);
             if (!layout.IsInside(cell)) return;
 
@@ -264,8 +310,11 @@ namespace DontLookBack.ObservationMaze
             GUI.Box(new Rect(18f, 18f, 420f, 118f), GUIContent.none);
             GUI.color = Color.white;
             GUI.Label(new Rect(34f, 30f, 390f, 24f), $"구역: {ZoneName(cell)} · 발견한 단서 {foundClues}/{clues.Count}");
-            GUI.Label(new Rect(34f, 55f, 390f, 24f), "목표: 시설 외벽의 녹색 출구를 찾기");
-            GUI.Label(new Rect(34f, 80f, 390f, 44f), "이동 WASD/방향키 · 시선 마우스\n분필 Q · 집중해서 듣기 F");
+            GUI.color = powerOn ? new Color(0.65f, 1f, 0.72f) : new Color(1f, 0.62f, 0.32f);
+            GUI.Label(new Rect(34f, 55f, 390f, 24f),
+                powerOn ? "목표: 시설 외벽의 녹색 출구를 찾기" : "현재 퀘스트: 전력 제어실에서 주 전원 복구 [E]");
+            GUI.color = Color.white;
+            GUI.Label(new Rect(34f, 80f, 390f, 44f), "이동 WASD/방향키 · 시선 마우스 · 상호작용 E\n분필 Q · 집중해서 듣기 F");
 
             if (player.IsListening)
             {
@@ -284,6 +333,16 @@ namespace DontLookBack.ObservationMaze
 
         private string AmbientHint(MazeCell cell)
         {
+            if (!powerOn)
+            {
+                var powerDx = powerCell.X - cell.X;
+                var powerDy = powerCell.Y - cell.Y;
+                var powerDistance = Mathf.Abs(powerDx) + Mathf.Abs(powerDy);
+                return powerDistance < 4
+                    ? "집중: 가까운 곳에서 비상 전력 장치의 짧은 신호음"
+                    : "집중: 어둠 속에서 희미한 전기 신호음";
+            }
+
             var dx = layout.Exit.X - cell.X;
             var dy = layout.Exit.Y - cell.Y;
             var horizontal = dx == 0 ? "" : dx > 0 ? "오른쪽" : "왼쪽";
@@ -322,6 +381,20 @@ namespace DontLookBack.ObservationMaze
         {
             message = value;
             messageUntil = Time.time + duration;
+        }
+
+        private void SetFacilityLights(bool enabled)
+        {
+            foreach (var global in globalLights)
+            {
+                global.intensity = enabled ? 0.78f : 0.018f;
+                global.color = enabled ? new Color(0.88f, 0.94f, 1f) : new Color(0.14f, 0.2f, 0.25f);
+            }
+
+            if (flashlight != null)
+            {
+                flashlight.intensity = enabled ? 0.38f : 1.15f;
+            }
         }
 
         private void CreateWall(Transform parent, Vector2 position, Vector2 size)
