@@ -1,43 +1,45 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering.Universal;
 
 namespace DontLookBack.ObservationMaze
 {
     public sealed class ObservationMazeGame : MonoBehaviour
     {
-        private const float RoomWidth = 11f;
-        private const float RoomHeight = 7f;
-        private const float DoorShiftDelay = 1.35f;
-        private readonly List<Room> rooms = new();
-        private readonly List<Door> doors = new();
+        private const int MazeWidth = 31;
+        private const int MazeHeight = 31;
+        private const float CellSize = 2.35f;
+        private const float WallThickness = 0.16f;
+        private const int MazeSeed = 170319;
+        private readonly List<Clue> clues = new();
+        private readonly Dictionary<MazeCell, GameObject> chalkMarks = new();
+        private readonly List<Anomaly> anomalies = new();
+        private MazeLayout layout;
         private ObservationMazePlayer player;
         private Camera gameCamera;
-        private Room currentRoom;
-        private float unobservedTime;
-        private float messageUntil;
-        private string message = "마우스로 문을 바라보면 연결이 고정됩니다.";
-        private bool generatorOn;
-        private bool completed;
+        private Material litMaterial;
         private Texture2D pixel;
+        private string message;
+        private float messageUntil;
+        private bool completed;
+        private int foundClues;
 
-        private sealed class Room
+        private sealed class Clue
         {
-            public int Id;
-            public string Name;
-            public string Sound;
-            public Vector2 Center;
-            public Color Color;
-            public bool Chalk;
+            public MazeCell Cell;
+            public string Text;
+            public GameObject Marker;
+            public bool Found;
         }
 
-        private sealed class Door
+        private sealed class Anomaly
         {
-            public GameObject Object;
-            public Room Owner;
-            public DoorLinkCycle Links;
-            public Vector2 Position;
-            public bool Observed;
+            public GameObject Marker;
+            public MazeCell First;
+            public MazeCell Second;
+            public bool AtFirst = true;
+            public float HiddenTime;
         }
 
         private void Awake()
@@ -45,13 +47,19 @@ namespace DontLookBack.ObservationMaze
             pixel = new Texture2D(1, 1, TextureFormat.RGBA32, false);
             pixel.SetPixel(0, 0, Color.white);
             pixel.Apply();
-            BuildCamera();
-            BuildFacility();
+            var shader = Shader.Find("Universal Render Pipeline/2D/Sprite-Lit-Default");
+            if (shader != null) litMaterial = new Material(shader);
+
+            layout = new MazeLayout(MazeWidth, MazeHeight, MazeSeed);
+            BuildCameraAndDarkness();
+            BuildMaze();
             BuildPlayer();
-            EnterRoom(rooms[0], Vector2.zero);
+            BuildClues();
+            BuildAnomalies();
+            ShowMessage("중앙 관찰실. 바람과 시설 번호를 따라 외벽의 출구를 찾아라.", 6f);
         }
 
-        private void BuildCamera()
+        private void BuildCameraAndDarkness()
         {
             gameCamera = Camera.main;
             if (gameCamera == null)
@@ -62,218 +70,267 @@ namespace DontLookBack.ObservationMaze
             }
 
             gameCamera.orthographic = true;
-            gameCamera.orthographicSize = 5.2f;
-            gameCamera.backgroundColor = new Color(0.015f, 0.02f, 0.025f);
-            gameCamera.transform.position = new Vector3(0f, 0f, -10f);
-        }
+            gameCamera.orthographicSize = 6.4f;
+            gameCamera.backgroundColor = new Color(0.002f, 0.004f, 0.006f);
 
-        private void BuildFacility()
-        {
-            rooms.Add(NewRoom(0, "안전실", "낡은 환풍기 소리", new Vector2(0f, 0f), new Color(0.12f, 0.18f, 0.2f)));
-            rooms.Add(NewRoom(1, "사무동", "형광등의 낮은 웅웅거림", new Vector2(18f, 0f), new Color(0.2f, 0.18f, 0.14f)));
-            rooms.Add(NewRoom(2, "발전실", "무거운 기계 진동", new Vector2(36f, 0f), new Color(0.22f, 0.13f, 0.08f)));
-            rooms.Add(NewRoom(3, "침수실", "오른쪽에서 흐르는 물소리", new Vector2(54f, 0f), new Color(0.06f, 0.15f, 0.22f)));
-            rooms.Add(NewRoom(4, "출구 관찰실", "문틈의 차가운 바람", new Vector2(72f, 0f), new Color(0.12f, 0.1f, 0.17f)));
-
-            AddDoor(rooms[0], 1, 3);
-            AddDoor(rooms[1], 2, 3, 0);
-            AddDoor(rooms[2], 4, 1);
-            AddDoor(rooms[3], 1, 2);
-            AddDoor(rooms[4], 0);
-        }
-
-        private Room NewRoom(int id, string name, string sound, Vector2 center, Color color)
-        {
-            var room = new Room { Id = id, Name = name, Sound = sound, Center = center, Color = color };
-            var root = new GameObject($"Room {id} - {name}");
-            root.transform.position = center;
-
-            CreateSprite(root.transform, "Floor", Vector2.zero, new Vector2(RoomWidth, RoomHeight), color, -3);
-            CreateWall(root.transform, new Vector2(0f, RoomHeight * 0.5f), new Vector2(RoomWidth, 0.25f));
-            CreateWall(root.transform, new Vector2(0f, -RoomHeight * 0.5f), new Vector2(RoomWidth, 0.25f));
-            CreateWall(root.transform, new Vector2(-RoomWidth * 0.5f, 0f), new Vector2(0.25f, RoomHeight));
-            CreateWall(root.transform, new Vector2(RoomWidth * 0.5f, 1.9f), new Vector2(0.25f, 3.2f));
-            CreateWall(root.transform, new Vector2(RoomWidth * 0.5f, -1.9f), new Vector2(0.25f, 3.2f));
-
-            var sign = CreateText(root.transform, name, new Vector2(0f, 2.65f), 0.42f, Color.white);
-            sign.name = "Room Identity";
-            if (id == 2) CreateText(root.transform, "[E] 발전기 가동", new Vector2(0f, 0f), 0.34f, new Color(1f, 0.65f, 0.2f));
-            if (id == 4) CreateText(root.transform, "[E] 시설 탈출", new Vector2(0f, 0f), 0.34f, new Color(0.7f, 0.9f, 1f));
-            return room;
-        }
-
-        private void AddDoor(Room owner, params int[] destinations)
-        {
-            var doorObject = CreateSprite(null, $"Unstable Door - {owner.Name}", owner.Center + new Vector2(RoomWidth * 0.5f, 0f), new Vector2(0.45f, 1.65f), new Color(0.65f, 0.78f, 0.8f), 2);
-            doors.Add(new Door
+            foreach (var global in FindObjectsByType<Light2D>(FindObjectsSortMode.None))
             {
-                Object = doorObject,
-                Owner = owner,
-                Links = new DoorLinkCycle(destinations),
-                Position = doorObject.transform.position
-            });
+                if (global.lightType == Light2D.LightType.Global)
+                {
+                    global.intensity = 0.018f;
+                    global.color = new Color(0.14f, 0.2f, 0.25f);
+                }
+            }
+        }
+
+        private void BuildMaze()
+        {
+            var mazeRoot = new GameObject("Large Fixed Maze");
+            var totalSize = new Vector2(MazeWidth * CellSize, MazeHeight * CellSize);
+            CreateSprite(mazeRoot.transform, "Facility Floor", MazeToWorld(new MazeCell((MazeWidth - 1) / 2, (MazeHeight - 1) / 2)),
+                totalSize, new Color(0.09f, 0.105f, 0.11f), -5, false);
+
+            for (var x = 0; x < MazeWidth; x++)
+            {
+                for (var y = 0; y < MazeHeight; y++)
+                {
+                    var cell = new MazeCell(x, y);
+                    var center = MazeToWorld(cell);
+                    if (!layout.CanMove(cell, 0))
+                        CreateWall(mazeRoot.transform, center + Vector2.up * CellSize * 0.5f, new Vector2(CellSize + WallThickness, WallThickness));
+                    if (!layout.CanMove(cell, 1))
+                        CreateWall(mazeRoot.transform, center + Vector2.right * CellSize * 0.5f, new Vector2(WallThickness, CellSize + WallThickness));
+                    if (y == 0 && !layout.CanMove(cell, 2))
+                        CreateWall(mazeRoot.transform, center + Vector2.down * CellSize * 0.5f, new Vector2(CellSize + WallThickness, WallThickness));
+                    if (x == 0 && !layout.CanMove(cell, 3))
+                        CreateWall(mazeRoot.transform, center + Vector2.left * CellSize * 0.5f, new Vector2(WallThickness, CellSize + WallThickness));
+                }
+            }
+
+            CreateSprite(null, "Central Observation Room", MazeToWorld(layout.Start), Vector2.one * 1.3f,
+                new Color(0.18f, 0.42f, 0.46f), -1, false);
+            CreateSprite(null, "Exterior Exit", MazeToWorld(layout.Exit), Vector2.one * 1.05f,
+                new Color(0.25f, 0.82f, 0.55f), 1, false);
         }
 
         private void BuildPlayer()
         {
-            var playerObject = CreateSprite(null, "Observer", Vector2.zero, new Vector2(0.7f, 0.55f), new Color(0.82f, 0.9f, 0.78f), 5);
+            var playerObject = CreateSprite(null, "Observer", MazeToWorld(layout.Start), new Vector2(0.55f, 0.45f),
+                new Color(0.82f, 0.92f, 0.82f), 8, false);
             playerObject.AddComponent<Rigidbody2D>();
             playerObject.AddComponent<CircleCollider2D>();
             player = playerObject.AddComponent<ObservationMazePlayer>();
-            CreateSprite(playerObject.transform, "Flashlight Direction", new Vector2(0.55f, 0f), new Vector2(0.8f, 0.12f), new Color(1f, 0.9f, 0.45f), 4);
+            CreateSprite(playerObject.transform, "Facing Direction", new Vector2(0.45f, 0f), new Vector2(0.65f, 0.09f),
+                new Color(1f, 0.88f, 0.38f), 9, false);
+
+            var lightObject = new GameObject("Narrow Flashlight");
+            lightObject.transform.SetParent(playerObject.transform, false);
+            var flashlight = lightObject.AddComponent<Light2D>();
+            flashlight.lightType = Light2D.LightType.Point;
+            flashlight.intensity = 1.15f;
+            flashlight.color = new Color(1f, 0.88f, 0.62f);
+            flashlight.pointLightInnerRadius = 0.35f;
+            flashlight.pointLightOuterRadius = 7.2f;
+            flashlight.pointLightInnerAngle = 22f;
+            flashlight.pointLightOuterAngle = 58f;
+            flashlight.falloffIntensity = 0.72f;
+        }
+
+        private void BuildClues()
+        {
+            var path = layout.Solution;
+            var clueCount = 9;
+            for (var index = 1; index <= clueCount; index++)
+            {
+                var pathIndex = Mathf.Clamp(index * path.Count / (clueCount + 1), 1, path.Count - 2);
+                var cell = path[pathIndex];
+                var next = path[Mathf.Min(pathIndex + 1, path.Count - 1)];
+                var direction = DirectionName(next.X - cell.X, next.Y - cell.Y);
+                var zone = ZoneName(cell);
+                var text = index switch
+                {
+                    1 => $"시설 기록: 출구는 중앙이 아니라 외벽에 있다. {direction} 통로를 확인하라.",
+                    3 => $"배관 표식: 번호가 커지는 방향이 외벽이다. 다음 흐름은 {direction}.",
+                    5 => $"근무자 메모: {zone}의 바람은 출구 환기구에서 들어온다. {direction}으로 향한다.",
+                    7 => $"찢어진 대피도: 녹색 외벽등까지 {direction}.",
+                    9 => $"차가운 바람이 강해진다. 출구는 이제 {direction} 방향에서 가깝다.",
+                    _ => $"{zone} 표지판: 외곽 순찰로는 {direction} 방향."
+                };
+
+                var marker = CreateSprite(null, $"Clue {index:00}", MazeToWorld(cell), Vector2.one * 0.38f,
+                    new Color(0.94f, 0.66f, 0.18f), 2, false);
+                clues.Add(new Clue { Cell = cell, Text = text, Marker = marker });
+            }
+        }
+
+        private void BuildAnomalies()
+        {
+            var path = layout.Solution;
+            var indices = new[] { path.Count / 4, path.Count / 2, path.Count * 3 / 4 };
+            for (var i = 0; i < indices.Length; i++)
+            {
+                var first = path[Mathf.Clamp(indices[i], 2, path.Count - 3)];
+                var second = path[Mathf.Clamp(indices[i] + 2, 2, path.Count - 3)];
+                var marker = CreateSprite(null, $"Unobserved Room Marker {i + 1}", MazeToWorld(first),
+                    new Vector2(0.55f, 0.55f), new Color(0.66f, 0.22f, 0.3f), 1, false);
+                anomalies.Add(new Anomaly { Marker = marker, First = first, Second = second });
+            }
         }
 
         private void Update()
         {
-            if (player == null || currentRoom == null || completed)
-            {
-                return;
-            }
+            if (player == null || completed) return;
+            var playerPosition = (Vector2)player.transform.position;
+            gameCamera.transform.position = new Vector3(playerPosition.x, playerPosition.y, -10f);
 
-            UpdateObservation();
-            UpdateRoomRules();
-            HandleInput();
-            gameCamera.transform.position = new Vector3(currentRoom.Center.x, currentRoom.Center.y, -10f);
+            UpdateClues(playerPosition);
+            UpdateAnomalies(playerPosition);
+            HandleInput(playerPosition);
+
+            if (Vector2.Distance(playerPosition, MazeToWorld(layout.Exit)) < 0.75f)
+            {
+                completed = true;
+                player.GetComponent<Rigidbody2D>().linearVelocity = Vector2.zero;
+                ShowMessage($"탈출 성공 — {foundClues}/{clues.Count}개의 단서로 외벽에 도달했다.", 999f);
+            }
         }
 
-        private void UpdateObservation()
+        private void UpdateClues(Vector2 playerPosition)
         {
-            var door = GetCurrentDoor();
-            if (door == null) return;
-
-            var toDoor = door.Position - (Vector2)player.transform.position;
-            var insideCone = toDoor.magnitude < 8f && Vector2.Angle(player.LookDirection, toDoor) <= 38f;
-            var rayStart = (Vector2)player.transform.position + player.LookDirection * 0.45f;
-            door.Observed = insideCone && !Physics2D.Linecast(rayStart, door.Position, LayerMask.GetMask("Default"));
-            var renderer = door.Object.GetComponent<SpriteRenderer>();
-            renderer.color = door.Observed
-                ? new Color(0.95f, 0.88f, 0.45f)
-                : new Color(0.38f, 0.48f, 0.52f);
+            foreach (var clue in clues)
+            {
+                if (clue.Found || Vector2.Distance(playerPosition, clue.Marker.transform.position) > 0.72f) continue;
+                clue.Found = true;
+                foundClues++;
+                clue.Marker.GetComponent<SpriteRenderer>().color = new Color(0.35f, 0.5f, 0.38f);
+                ShowMessage(clue.Text, 7f);
+            }
         }
 
-        private void UpdateRoomRules()
+        private void UpdateAnomalies(Vector2 playerPosition)
         {
-            var door = GetCurrentDoor();
-            if (door == null || door.Observed)
+            foreach (var anomaly in anomalies)
             {
-                unobservedTime = 0f;
-                return;
-            }
+                var toMarker = (Vector2)anomaly.Marker.transform.position - playerPosition;
+                var observed = toMarker.magnitude < 7.2f && Vector2.Angle(player.LookDirection, toMarker) < 30f;
+                if (observed)
+                {
+                    anomaly.HiddenTime = 0f;
+                    anomaly.Marker.GetComponent<SpriteRenderer>().color = new Color(0.85f, 0.36f, 0.38f);
+                    continue;
+                }
 
-            unobservedTime += Time.deltaTime;
-            if (unobservedTime >= DoorShiftDelay)
-            {
-                door.Links.TryShift(false);
-                unobservedTime = 0f;
-                ShowMessage("벽 속에서 무언가 움직였다.");
+                anomaly.HiddenTime += Time.deltaTime;
+                if (anomaly.HiddenTime < 2.2f) continue;
+                anomaly.AtFirst = !anomaly.AtFirst;
+                anomaly.Marker.transform.position = MazeToWorld(anomaly.AtFirst ? anomaly.First : anomaly.Second);
+                anomaly.HiddenTime = 0f;
+                ShowMessage("보지 않던 공간에서 금속 마찰음이 들렸다.", 2.8f);
             }
         }
 
-        private void HandleInput()
+        private void HandleInput(Vector2 playerPosition)
         {
             var keyboard = Keyboard.current;
-            if (keyboard == null) return;
+            if (keyboard == null || !keyboard.qKey.wasPressedThisFrame) return;
+            var cell = WorldToMaze(playerPosition);
+            if (!layout.IsInside(cell)) return;
 
-            if (keyboard.eKey.wasPressedThisFrame)
+            if (chalkMarks.TryGetValue(cell, out var existing))
             {
-                if (currentRoom.Id == 2 && Vector2.Distance(player.transform.position, currentRoom.Center) < 2f)
-                {
-                    generatorOn = true;
-                    ShowMessage("발전기가 가동됐다. 출구 관찰실에서 바람 소리를 찾아라.");
-                    return;
-                }
-
-                if (currentRoom.Id == 4 && Vector2.Distance(player.transform.position, currentRoom.Center) < 2f)
-                {
-                    if (generatorOn)
-                    {
-                        completed = true;
-                        player.GetComponent<Rigidbody2D>().linearVelocity = Vector2.zero;
-                        ShowMessage("탈출 성공 — 관찰된 현실이 당신을 놓아주었다.", 999f);
-                    }
-                    else
-                    {
-                        ShowMessage("엘리베이터에 전력이 없다.");
-                    }
-                    return;
-                }
-
-                var door = GetCurrentDoor();
-                if (door != null && Vector2.Distance(player.transform.position, door.Position) < 1.4f)
-                {
-                    EnterRoom(rooms[door.Links.Current], new Vector2(-RoomWidth * 0.5f + 1f, 0f));
-                }
+                Destroy(existing);
+                chalkMarks.Remove(cell);
+                ShowMessage("이 위치의 분필 표시를 지웠다.");
             }
-
-            if (keyboard.qKey.wasPressedThisFrame)
+            else
             {
-                currentRoom.Chalk = !currentRoom.Chalk;
-                ShowMessage(currentRoom.Chalk ? $"분필 별표를 {currentRoom.Name}에 남겼다." : "분필 표시를 지웠다.");
+                var mark = CreateSprite(null, "Chalk Mark", MazeToWorld(cell) + new Vector2(0f, -0.55f),
+                    new Vector2(0.34f, 0.09f), new Color(0.72f, 0.86f, 0.9f), 3, false);
+                chalkMarks[cell] = mark;
+                ShowMessage($"분필 표시를 남겼다. 현재 구역: {ZoneName(cell)}");
             }
         }
 
-        private void EnterRoom(Room room, Vector2 localPosition)
+        private void OnGUI()
         {
-            currentRoom = room;
-            player.transform.position = room.Center + localPosition;
-            unobservedTime = 0f;
-            ShowMessage($"{room.Name} — {room.Sound}");
+            if (player == null) return;
+            var scale = Mathf.Max(1f, Screen.height / 720f);
+            GUI.matrix = Matrix4x4.Scale(Vector3.one * scale);
+            var width = Screen.width / scale;
+            var height = Screen.height / scale;
+            var cell = WorldToMaze(player.transform.position);
+
+            GUI.color = new Color(0f, 0f, 0f, 0.82f);
+            GUI.Box(new Rect(18f, 18f, 420f, 118f), GUIContent.none);
+            GUI.color = Color.white;
+            GUI.Label(new Rect(34f, 30f, 390f, 24f), $"구역: {ZoneName(cell)} · 발견한 단서 {foundClues}/{clues.Count}");
+            GUI.Label(new Rect(34f, 55f, 390f, 24f), "목표: 시설 외벽의 녹색 출구를 찾기");
+            GUI.Label(new Rect(34f, 80f, 390f, 44f), "이동 WASD/방향키 · 시선 마우스\n분필 Q · 집중해서 듣기 F");
+
+            if (player.IsListening)
+            {
+                GUI.color = new Color(0.58f, 0.84f, 1f);
+                GUI.Label(new Rect(width * 0.5f - 220f, height - 80f, 440f, 28f), AmbientHint(cell));
+            }
+
+            if (Time.time < messageUntil)
+            {
+                GUI.color = new Color(0f, 0f, 0f, 0.88f);
+                GUI.Box(new Rect(width * 0.5f - 310f, height - 142f, 620f, 54f), GUIContent.none);
+                GUI.color = completed ? new Color(0.62f, 1f, 0.76f) : Color.white;
+                GUI.Label(new Rect(width * 0.5f - 288f, height - 126f, 576f, 34f), message);
+            }
         }
 
-        private Door GetCurrentDoor() => doors.Find(door => door.Owner == currentRoom);
+        private string AmbientHint(MazeCell cell)
+        {
+            var dx = layout.Exit.X - cell.X;
+            var dy = layout.Exit.Y - cell.Y;
+            var horizontal = dx == 0 ? "" : dx > 0 ? "오른쪽" : "왼쪽";
+            var vertical = dy == 0 ? "" : dy > 0 ? "위쪽" : "아래쪽";
+            var direction = string.IsNullOrEmpty(horizontal) ? vertical :
+                string.IsNullOrEmpty(vertical) ? horizontal : $"{horizontal}과 {vertical} 사이";
+            var distance = Mathf.Abs(dx) + Mathf.Abs(dy);
+            return distance < 8
+                ? $"집중: {direction}에서 강한 바람과 느슨한 철문 소리"
+                : $"집중: {direction}에서 아주 약한 공기 흐름";
+        }
 
-        private void ShowMessage(string value, float duration = 3.2f)
+        private string ZoneName(MazeCell cell)
+        {
+            var horizontal = cell.X < MazeWidth / 3 ? "서쪽" : cell.X >= MazeWidth * 2 / 3 ? "동쪽" : "중앙";
+            var vertical = cell.Y < MazeHeight / 3 ? "수몰 구역" : cell.Y >= MazeHeight * 2 / 3 ? "감시 구역" : "연구 구역";
+            return $"{horizontal} {vertical}";
+        }
+
+        private static string DirectionName(int dx, int dy)
+        {
+            if (dx > 0) return "동쪽";
+            if (dx < 0) return "서쪽";
+            if (dy > 0) return "북쪽";
+            return "남쪽";
+        }
+
+        private Vector2 MazeToWorld(MazeCell cell) =>
+            new((cell.X - MazeWidth / 2) * CellSize, (cell.Y - MazeHeight / 2) * CellSize);
+
+        private MazeCell WorldToMaze(Vector2 world) =>
+            new(Mathf.RoundToInt(world.x / CellSize) + MazeWidth / 2,
+                Mathf.RoundToInt(world.y / CellSize) + MazeHeight / 2);
+
+        private void ShowMessage(string value, float duration = 3.4f)
         {
             message = value;
             messageUntil = Time.time + duration;
         }
 
-        private void OnGUI()
+        private void CreateWall(Transform parent, Vector2 position, Vector2 size)
         {
-            if (currentRoom == null || player == null) return;
-
-            var scale = Mathf.Max(1f, Screen.height / 720f);
-            GUI.matrix = Matrix4x4.Scale(Vector3.one * scale);
-            var width = Screen.width / scale;
-            var height = Screen.height / scale;
-
-            GUI.color = new Color(0f, 0f, 0f, 0.78f);
-            GUI.Box(new Rect(18f, 18f, 410f, 116f), GUIContent.none);
-            GUI.color = Color.white;
-            GUI.Label(new Rect(34f, 30f, 380f, 24f), $"현재 방: {currentRoom.Name} {(currentRoom.Chalk ? "★" : "")}");
-            GUI.Label(new Rect(34f, 54f, 380f, 24f), generatorOn ? "목표: 출구 관찰실로 이동" : "목표: 발전실을 찾아 전원 가동");
-            GUI.Label(new Rect(34f, 78f, 380f, 44f), "이동 WASD/방향키 · 시선 마우스 · 문/장치 E\n분필 Q · 집중해서 듣기 F(이동 느려짐)");
-
-            var door = GetCurrentDoor();
-            if (door != null)
-            {
-                GUI.color = door.Observed ? new Color(1f, 0.9f, 0.4f) : new Color(0.7f, 0.8f, 0.85f);
-                GUI.Label(new Rect(width - 260f, 28f, 240f, 28f), door.Observed ? "문 연결: 관찰로 고정됨" : "문 연결: 변화 가능");
-            }
-
-            if (player.IsListening)
-            {
-                GUI.color = new Color(0.6f, 0.85f, 1f);
-                GUI.Label(new Rect(width * 0.5f - 150f, height - 80f, 300f, 30f), $"집중: {currentRoom.Sound}");
-            }
-
-            if (Time.time < messageUntil)
-            {
-                GUI.color = new Color(0f, 0f, 0f, 0.84f);
-                GUI.Box(new Rect(width * 0.5f - 270f, height - 130f, 540f, 48f), GUIContent.none);
-                GUI.color = completed ? new Color(0.7f, 1f, 0.8f) : Color.white;
-                GUI.Label(new Rect(width * 0.5f - 250f, height - 116f, 500f, 28f), message);
-            }
+            CreateSprite(parent, "Maze Wall", position, size, new Color(0.18f, 0.22f, 0.23f), 0, true);
         }
 
-        private GameObject CreateWall(Transform parent, Vector2 localPosition, Vector2 size)
-        {
-            var wall = CreateSprite(parent, "Wall", localPosition, size, new Color(0.035f, 0.045f, 0.055f), 1);
-            wall.AddComponent<BoxCollider2D>();
-            return wall;
-        }
-
-        private GameObject CreateSprite(Transform parent, string objectName, Vector2 position, Vector2 size, Color color, int order)
+        private GameObject CreateSprite(Transform parent, string objectName, Vector2 position, Vector2 size,
+            Color color, int order, bool collider)
         {
             var gameObject = new GameObject(objectName);
             if (parent != null)
@@ -291,23 +348,9 @@ namespace DontLookBack.ObservationMaze
             renderer.sprite = Sprite.Create(pixel, new Rect(0f, 0f, 1f, 1f), new Vector2(0.5f, 0.5f), 1f);
             renderer.color = color;
             renderer.sortingOrder = order;
+            if (litMaterial != null) renderer.sharedMaterial = litMaterial;
+            if (collider) gameObject.AddComponent<BoxCollider2D>();
             return gameObject;
-        }
-
-        private static GameObject CreateText(Transform parent, string value, Vector2 localPosition, float size, Color color)
-        {
-            var textObject = new GameObject("Label");
-            textObject.transform.SetParent(parent, false);
-            textObject.transform.localPosition = localPosition;
-            var mesh = textObject.AddComponent<TextMesh>();
-            mesh.text = value;
-            mesh.fontSize = 48;
-            mesh.characterSize = size / 10f;
-            mesh.anchor = TextAnchor.MiddleCenter;
-            mesh.alignment = TextAlignment.Center;
-            mesh.color = color;
-            mesh.GetComponent<MeshRenderer>().sortingOrder = 3;
-            return textObject;
         }
     }
 }

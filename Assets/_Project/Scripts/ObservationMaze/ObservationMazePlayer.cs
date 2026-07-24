@@ -6,7 +6,7 @@ namespace DontLookBack.ObservationMaze
     [RequireComponent(typeof(Rigidbody2D), typeof(CircleCollider2D))]
     public sealed class ObservationMazePlayer : MonoBehaviour
     {
-        private const float MoveSpeed = 4.2f;
+        private const float MoveSpeed = 3.8f;
         private Rigidbody2D body;
         private Camera gameCamera;
         private Vector2 move;
