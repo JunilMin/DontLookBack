@@ -30,6 +30,8 @@ namespace DontLookBack.ObservationMaze
         private bool completed;
         private bool exitLockedMessageShown;
         private int foundClues;
+        private Clue nearbyClue;
+        private Clue openClue;
 
         private sealed class Clue
         {
@@ -231,13 +233,23 @@ namespace DontLookBack.ObservationMaze
 
         private void UpdateClues(Vector2 playerPosition)
         {
+            nearbyClue = null;
+            var nearestDistance = float.MaxValue;
             foreach (var clue in clues)
             {
-                if (clue.Found || Vector2.Distance(playerPosition, clue.Marker.transform.position) > 0.72f) continue;
-                clue.Found = true;
-                foundClues++;
-                clue.Marker.GetComponent<SpriteRenderer>().color = new Color(0.35f, 0.5f, 0.38f);
-                ShowMessage(clue.Text, 7f);
+                var distance = Vector2.Distance(playerPosition, clue.Marker.transform.position);
+                if (distance <= 0.78f && distance < nearestDistance)
+                {
+                    nearbyClue = clue;
+                    nearestDistance = distance;
+                }
+
+                var renderer = clue.Marker.GetComponent<SpriteRenderer>();
+                renderer.color = clue == openClue || clue == nearbyClue
+                    ? new Color(1f, 0.82f, 0.28f)
+                    : clue.Found
+                        ? new Color(0.35f, 0.5f, 0.38f)
+                        : new Color(0.94f, 0.66f, 0.18f);
             }
         }
 
@@ -268,6 +280,16 @@ namespace DontLookBack.ObservationMaze
             var keyboard = Keyboard.current;
             if (keyboard == null) return;
 
+            if (openClue != null)
+            {
+                if (keyboard.eKey.wasPressedThisFrame)
+                {
+                    openClue = null;
+                    player.MovementLocked = false;
+                }
+                return;
+            }
+
             if (!powerOn && keyboard.eKey.wasPressedThisFrame &&
                 Vector2.Distance(playerPosition, powerConsole.transform.position) < 0.9f)
             {
@@ -275,6 +297,19 @@ namespace DontLookBack.ObservationMaze
                 SetFacilityLights(true);
                 powerConsole.GetComponent<SpriteRenderer>().color = new Color(0.25f, 0.9f, 0.48f);
                 ShowMessage("주 전력 복구 완료. 시설 전체 조명이 켜졌다. 이제 외벽 출구를 찾아라.", 7f);
+                return;
+            }
+
+            if (nearbyClue != null && keyboard.eKey.wasPressedThisFrame)
+            {
+                openClue = nearbyClue;
+                player.MovementLocked = true;
+                player.GetComponent<Rigidbody2D>().linearVelocity = Vector2.zero;
+                if (!openClue.Found)
+                {
+                    openClue.Found = true;
+                    foundClues++;
+                }
                 return;
             }
 
@@ -322,12 +357,30 @@ namespace DontLookBack.ObservationMaze
                 GUI.Label(new Rect(width * 0.5f - 220f, height - 80f, 440f, 28f), AmbientHint(cell));
             }
 
+            if (nearbyClue != null && openClue == null)
+            {
+                GUI.color = new Color(0f, 0f, 0f, 0.88f);
+                GUI.Box(new Rect(width * 0.5f - 155f, height - 84f, 310f, 38f), GUIContent.none);
+                GUI.color = new Color(1f, 0.82f, 0.3f);
+                GUI.Label(new Rect(width * 0.5f - 130f, height - 73f, 260f, 24f), "[E] 메모 읽기");
+            }
+
             if (Time.time < messageUntil)
             {
                 GUI.color = new Color(0f, 0f, 0f, 0.88f);
                 GUI.Box(new Rect(width * 0.5f - 310f, height - 142f, 620f, 54f), GUIContent.none);
                 GUI.color = completed ? new Color(0.62f, 1f, 0.76f) : Color.white;
                 GUI.Label(new Rect(width * 0.5f - 288f, height - 126f, 576f, 34f), message);
+            }
+
+            if (openClue != null)
+            {
+                GUI.color = new Color(0.035f, 0.03f, 0.025f, 0.96f);
+                GUI.Box(new Rect(width * 0.5f - 300f, height * 0.5f - 145f, 600f, 290f), GUIContent.none);
+                GUI.color = new Color(0.93f, 0.86f, 0.7f);
+                GUI.Label(new Rect(width * 0.5f - 262f, height * 0.5f - 108f, 524f, 190f), openClue.Text);
+                GUI.color = new Color(0.72f, 0.72f, 0.68f);
+                GUI.Label(new Rect(width * 0.5f - 120f, height * 0.5f + 98f, 240f, 24f), "[E] 메모 닫기");
             }
         }
 
@@ -393,7 +446,8 @@ namespace DontLookBack.ObservationMaze
 
             if (flashlight != null)
             {
-                flashlight.intensity = enabled ? 0.38f : 1.15f;
+                flashlight.enabled = !enabled;
+                flashlight.intensity = enabled ? 0f : 1.15f;
             }
         }
 
