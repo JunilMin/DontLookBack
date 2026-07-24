@@ -77,7 +77,7 @@ namespace DontLookBack.ObservationMaze
             }
 
             gameCamera.orthographic = true;
-            gameCamera.orthographicSize = 6.4f;
+            gameCamera.orthographicSize = 3.8f;
             gameCamera.backgroundColor = new Color(0.002f, 0.004f, 0.006f);
 
             foreach (var global in FindObjectsByType<Light2D>(FindObjectsSortMode.None))
