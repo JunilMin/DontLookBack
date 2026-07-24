@@ -13,6 +13,7 @@ namespace DontLookBack.ObservationMaze
 
         public Vector2 LookDirection { get; private set; } = Vector2.right;
         public bool IsListening { get; private set; }
+        public bool MovementLocked { get; set; }
 
         private void Awake()
         {
@@ -54,6 +55,12 @@ namespace DontLookBack.ObservationMaze
                 {
                     LookDirection = direction.normalized;
                 }
+            }
+
+            if (MovementLocked)
+            {
+                move = Vector2.zero;
+                IsListening = false;
             }
 
             transform.right = LookDirection;
